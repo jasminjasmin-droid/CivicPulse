@@ -1,16 +1,25 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import User
-from app.schemas import UserCreate, UserResponse, UserLogin
-from app.security import hash_password, verify_password
+from app.schemas import UserCreate, UserResponse, UserLogin, LoginResponse
+from app.security import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    decode_access_token,
+)
 
 app = FastAPI(
     title="CivicPulse API",
     description="Backend API for the CivicPulse smart governance platform",
     version="1.0.0"
 )
+
+security = HTTPBearer(auto_error=False)
+
 
 def get_db():
     db = SessionLocal()
@@ -19,13 +28,77 @@ def get_db():
     finally:
         db.close()
 
+
+def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db)
+) -> User:
+    token: str | None = None
+    if credentials and credentials.credentials:
+        token = credentials.credentials
+    else:
+        # Fallback to Authorization header if Bearer prefix was provided directly
+        auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+        if auth_header:
+            parts = auth_header.split()
+            if len(parts) == 2 and parts[0].lower() == "bearer":
+                token = parts[1]
+            elif len(parts) == 1:
+                token = parts[0]
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials were not provided",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = decode_access_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials: invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user_id_str = payload.get("sub")
+    if not user_id_str:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials: token missing subject",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        user_id = int(user_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials: invalid user ID in token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
+
+
 @app.get("/")
 def root():
     return {"message": "CivicPulse API is running"}
 
+
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
 
 @app.post("/users", response_model=UserResponse)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
@@ -47,11 +120,13 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
 
     return new_user
 
+
 @app.get("/users", response_model=list[UserResponse])
 def get_users(db: Session = Depends(get_db)):
     return db.query(User).all()
 
-@app.post("/login")
+
+@app.post("/login", response_model=LoginResponse)
 def login(user: UserLogin, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.email == user.email).first()
 
@@ -61,10 +136,30 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     if not verify_password(user.password, existing_user.password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    access_token = create_access_token(
+        data={
+            "sub": str(existing_user.id),
+            "email": existing_user.email,
+            "role": existing_user.role
+        }
+    )
+
     return {
+        "access_token": access_token,
+        "token_type": "bearer",
         "message": "Login successful",
         "user_id": existing_user.id,
         "name": existing_user.name,
         "email": existing_user.email,
         "role": existing_user.role
+    }
+
+
+@app.get("/me", response_model=UserResponse)
+def get_me(current_user: User = Depends(get_current_user)):
+    return {
+        "id": current_user.id,
+        "name": current_user.name,
+        "email": current_user.email,
+        "role": current_user.role
     }
