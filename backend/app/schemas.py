@@ -101,6 +101,7 @@ class ComplaintHistoryResponse(BaseModel):
     new_value: Optional[str] = None
     performed_by: int
     created_at: datetime
+    performed_by_name: Optional[str] = None
 
     class Config:
         from_attributes = True

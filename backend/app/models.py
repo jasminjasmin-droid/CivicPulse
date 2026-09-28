@@ -68,6 +68,10 @@ class ComplaintHistory(Base):
     complaint = relationship("Complaint", backref="history")
     performer = relationship("User")
 
+    @property
+    def performed_by_name(self) -> str | None:
+        return self.performer.name if self.performer else None
+
 
 class ComplaintEvidence(Base):
     __tablename__ = "complaint_evidence"

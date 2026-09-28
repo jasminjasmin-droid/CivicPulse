@@ -874,10 +874,9 @@ def update_complaint_status(
     old_status = complaint.status
     new_status = status_update.status
 
-    complaint.status = new_status
-    complaint.updated_at = datetime.now(timezone.utc)
-
     if old_status != new_status:
+        complaint.status = new_status
+        complaint.updated_at = datetime.now(timezone.utc)
 
         db.add(
             ComplaintHistory(
@@ -889,8 +888,17 @@ def update_complaint_status(
             )
         )
 
-    db.commit()
-    db.refresh(complaint)
+        db.add(
+            Notification(
+                user_id=complaint.citizen_id,
+                complaint_id=complaint.id,
+                message=f"Complaint #{complaint.id} status changed from '{old_status}' to '{new_status}'.",
+                is_read=False,
+            )
+        )
+
+        db.commit()
+        db.refresh(complaint)
 
     return complaint
 
@@ -935,10 +943,9 @@ def update_complaint_priority(
     old_priority = complaint.priority or "Medium"
     new_priority = priority_update.priority
 
-    complaint.priority = new_priority
-    complaint.updated_at = datetime.now(timezone.utc)
-
     if old_priority != new_priority:
+        complaint.priority = new_priority
+        complaint.updated_at = datetime.now(timezone.utc)
 
         db.add(
             ComplaintHistory(
@@ -950,8 +957,17 @@ def update_complaint_priority(
             )
         )
 
-    db.commit()
-    db.refresh(complaint)
+        db.add(
+            Notification(
+                user_id=complaint.citizen_id,
+                complaint_id=complaint.id,
+                message=f"Complaint #{complaint.id} priority changed from '{old_priority}' to '{new_priority}'.",
+                is_read=False,
+            )
+        )
+
+        db.commit()
+        db.refresh(complaint)
 
     return complaint
 
@@ -1056,6 +1072,8 @@ def assign_complaint(
                 ),
             )
 
+    has_changed = False
+
     # --------------------------------------------------------
     # Department assignment history
     # --------------------------------------------------------
@@ -1064,6 +1082,7 @@ def assign_complaint(
         assignment.department_id is not None
         and assignment.department_id != complaint.department_id
     ):
+        has_changed = True
 
         old_dept_obj = (
             db.query(Department)
@@ -1099,6 +1118,15 @@ def assign_complaint(
             )
         )
 
+        db.add(
+            Notification(
+                user_id=complaint.citizen_id,
+                complaint_id=complaint.id,
+                message=f"Complaint #{complaint.id} department updated to '{new_dept.name}'.",
+                is_read=False,
+            )
+        )
+
         complaint.department_id = assignment.department_id
 
     # --------------------------------------------------------
@@ -1110,6 +1138,7 @@ def assign_complaint(
         and assignment.assigned_authority_id
         != complaint.assigned_authority_id
     ):
+        has_changed = True
 
         old_auth_obj = (
             db.query(User)
@@ -1145,14 +1174,23 @@ def assign_complaint(
             )
         )
 
+        db.add(
+            Notification(
+                user_id=complaint.citizen_id,
+                complaint_id=complaint.id,
+                message=f"Complaint #{complaint.id} assigned to authority officer '{new_auth.name}'.",
+                is_read=False,
+            )
+        )
+
         complaint.assigned_authority_id = (
             assignment.assigned_authority_id
         )
 
-    complaint.updated_at = datetime.now(timezone.utc)
-
-    db.commit()
-    db.refresh(complaint)
+    if has_changed:
+        complaint.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(complaint)
 
     return complaint
 
