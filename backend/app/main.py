@@ -203,3 +203,21 @@ def get_complaints(
 ):
     return db.query(Complaint).filter(Complaint.citizen_id == current_user.id).all()
 
+
+@app.get("/complaints/{complaint_id}", response_model=ComplaintResponse)
+def get_complaint(
+    complaint_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+
+    if not complaint or complaint.citizen_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    return complaint
+
+
