@@ -194,3 +194,12 @@ def create_complaint(
     db.refresh(new_complaint)
 
     return new_complaint
+
+
+@app.get("/complaints", response_model=list[ComplaintResponse])
+def get_complaints(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return db.query(Complaint).filter(Complaint.citizen_id == current_user.id).all()
+
