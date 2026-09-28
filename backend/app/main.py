@@ -23,6 +23,7 @@ from app.models import (
     Department,
     ComplaintHistory,
     ComplaintEvidence,
+    Notification,
 )
 from app.schemas import (
     UserCreate,
@@ -37,6 +38,9 @@ from app.schemas import (
     ComplaintAssignmentUpdate,
     ComplaintHistoryResponse,
     ComplaintEvidenceResponse,
+    NotificationResponse,
+    NotificationReadAllResponse,
+    NotificationUnreadCountResponse,
 )
 from app.security import (
     hash_password,
@@ -1285,3 +1289,104 @@ def download_complaint_evidence(
         media_type=evidence.file_type,
         filename=evidence.file_name,
     )
+
+
+# ============================================================
+# NOTIFICATIONS
+# ============================================================
+
+@app.get(
+    "/notifications",
+    response_model=list[NotificationResponse],
+)
+def get_notifications(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return (
+        db.query(Notification)
+        .filter(Notification.user_id == current_user.id)
+        .order_by(Notification.created_at.desc())
+        .all()
+    )
+
+
+@app.get(
+    "/notifications/unread-count",
+    response_model=NotificationUnreadCountResponse,
+)
+def get_unread_notification_count(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    unread_count = (
+        db.query(Notification)
+        .filter(
+            Notification.user_id == current_user.id,
+            Notification.is_read == False,
+        )
+        .count()
+    )
+    return {"unread_count": unread_count}
+
+
+@app.patch(
+    "/notifications/read-all",
+    response_model=NotificationReadAllResponse,
+)
+def mark_all_notifications_as_read(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    updated_count = (
+        db.query(Notification)
+        .filter(
+            Notification.user_id == current_user.id,
+            Notification.is_read == False,
+        )
+        .update(
+            {"is_read": True},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+
+    return {
+        "message": "All notifications marked as read",
+        "updated_count": updated_count,
+    }
+
+
+@app.patch(
+    "/notifications/{notification_id}/read",
+    response_model=NotificationResponse,
+)
+def mark_notification_as_read(
+    notification_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notification = (
+        db.query(Notification)
+        .filter(Notification.id == notification_id)
+        .first()
+    )
+
+    if not notification:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Notification not found",
+        )
+
+    if notification.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Notification not found",
+        )
+
+    if not notification.is_read:
+        notification.is_read = True
+        db.commit()
+        db.refresh(notification)
+
+    return notification
