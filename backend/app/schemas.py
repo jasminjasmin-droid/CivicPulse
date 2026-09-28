@@ -140,3 +140,20 @@ class NotificationUnreadCountResponse(BaseModel):
     unread_count: int
 
 
+class CitizenDashboardResponse(BaseModel):
+    total: int
+    pending: int
+    in_progress: int
+    resolved: int
+
+
+class AuthorityDashboardResponse(BaseModel):
+    total: int
+    pending: int
+    in_progress: int
+    resolved: int
+    high_priority: int
+    critical_priority: int
+
+
+

@@ -1,6 +1,7 @@
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
+from typing import Union
 
 from fastapi import (
     FastAPI,
@@ -12,8 +13,9 @@ from fastapi import (
     File,
 )
 from fastapi.responses import FileResponse
+from fastapi import status as http_status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import text
+from sqlalchemy import text, func, case
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine, Base
@@ -41,6 +43,8 @@ from app.schemas import (
     NotificationResponse,
     NotificationReadAllResponse,
     NotificationUnreadCountResponse,
+    CitizenDashboardResponse,
+    AuthorityDashboardResponse,
 )
 from app.security import (
     hash_password,
@@ -578,7 +582,86 @@ def create_complaint(
 
 
 # ============================================================
-# GET COMPLAINTS + SEARCH
+# HELPER: DATE PARSER
+# ============================================================
+
+def parse_date_param(
+    param_name: str,
+    value: str | None,
+    is_end: bool = False,
+) -> datetime | None:
+    if not value or not value.strip():
+        return None
+    val = value.strip()
+    try:
+        if len(val) == 10:
+            parsed_d = datetime.strptime(val, "%Y-%m-%d").date()
+            if is_end:
+                return datetime.combine(parsed_d, time.max)
+            else:
+                return datetime.combine(parsed_d, time.min)
+        dt = datetime.fromisoformat(val)
+        return dt
+    except Exception:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid date format for '{param_name}'. Expected YYYY-MM-DD or ISO 8601.",
+        )
+
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+
+@app.get(
+    "/dashboard",
+    response_model=Union[AuthorityDashboardResponse, CitizenDashboardResponse],
+)
+def get_dashboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role == "authority":
+        row = (
+            db.query(
+                func.count(Complaint.id).label("total"),
+                func.count(case((Complaint.status == "Pending", 1))).label("pending"),
+                func.count(case((Complaint.status == "In Progress", 1))).label("in_progress"),
+                func.count(case((Complaint.status == "Resolved", 1))).label("resolved"),
+                func.count(case((Complaint.priority == "High", 1))).label("high_priority"),
+                func.count(case((Complaint.priority == "Critical", 1))).label("critical_priority"),
+            )
+            .first()
+        )
+        return AuthorityDashboardResponse(
+            total=row.total or 0,
+            pending=row.pending or 0,
+            in_progress=row.in_progress or 0,
+            resolved=row.resolved or 0,
+            high_priority=row.high_priority or 0,
+            critical_priority=row.critical_priority or 0,
+        )
+
+    row = (
+        db.query(
+            func.count(Complaint.id).label("total"),
+            func.count(case((Complaint.status == "Pending", 1))).label("pending"),
+            func.count(case((Complaint.status == "In Progress", 1))).label("in_progress"),
+            func.count(case((Complaint.status == "Resolved", 1))).label("resolved"),
+        )
+        .filter(Complaint.citizen_id == current_user.id)
+        .first()
+    )
+    return CitizenDashboardResponse(
+        total=row.total or 0,
+        pending=row.pending or 0,
+        in_progress=row.in_progress or 0,
+        resolved=row.resolved or 0,
+    )
+
+
+# ============================================================
+# GET COMPLAINTS + ADVANCED FILTERS + SEARCH
 # ============================================================
 
 @app.get(
@@ -587,39 +670,130 @@ def create_complaint(
 )
 def get_complaints(
     search: str | None = None,
+    status: str | None = None,
+    category: str | None = None,
+    priority: str | None = None,
+    department_id: str | None = None,
+    assigned_authority_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
     # --------------------------------------------------------
     # Keep existing access control
     # --------------------------------------------------------
-
     if current_user.role == "authority":
         query = db.query(Complaint)
-
     else:
-        query = (
-            db.query(Complaint)
-            .filter(
-                Complaint.citizen_id == current_user.id
-            )
+        query = db.query(Complaint).filter(
+            Complaint.citizen_id == current_user.id
         )
 
     # --------------------------------------------------------
-    # Search title + description
+    # Filter: search (title + description)
     # --------------------------------------------------------
-
     if search and search.strip():
-
         search_term = f"%{search.strip()}%"
-
         query = query.filter(
             (Complaint.title.ilike(search_term))
             | (Complaint.description.ilike(search_term))
         )
 
+    # --------------------------------------------------------
+    # Filter: status (case-insensitive, validated)
+    # --------------------------------------------------------
+    if status is not None and status.strip() != "":
+        st = status.strip().lower()
+        status_map = {s.lower(): s for s in ALLOWED_COMPLAINT_STATUSES}
+        if st not in status_map:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid status '{status}'. "
+                    "Allowed statuses are: Pending, In Progress, Resolved."
+                ),
+            )
+        query = query.filter(Complaint.status.ilike(status_map[st]))
+
+    # --------------------------------------------------------
+    # Filter: category (case-insensitive substring)
+    # --------------------------------------------------------
+    if category is not None and category.strip() != "":
+        cat_term = f"%{category.strip()}%"
+        query = query.filter(Complaint.category.ilike(cat_term))
+
+    # --------------------------------------------------------
+    # Filter: priority (case-insensitive, validated)
+    # --------------------------------------------------------
+    if priority is not None and priority.strip() != "":
+        pr = priority.strip().lower()
+        priority_map = {p.lower(): p for p in ALLOWED_PRIORITIES}
+        if pr not in priority_map:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid priority '{priority}'. "
+                    "Allowed priorities are: Low, Medium, High, Critical."
+                ),
+            )
+        query = query.filter(Complaint.priority.ilike(priority_map[pr]))
+
+    # --------------------------------------------------------
+    # Filter: department_id (integer validated)
+    # --------------------------------------------------------
+    if department_id is not None and str(department_id).strip() != "":
+        try:
+            parsed_dept_id = int(str(department_id).strip())
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid department_id '{department_id}': must be an integer.",
+            )
+        query = query.filter(Complaint.department_id == parsed_dept_id)
+
+    # --------------------------------------------------------
+    # Filter: assigned_authority_id (integer validated)
+    # --------------------------------------------------------
+    if assigned_authority_id is not None and str(assigned_authority_id).strip() != "":
+        try:
+            parsed_auth_id = int(str(assigned_authority_id).strip())
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid assigned_authority_id '{assigned_authority_id}': must be an integer.",
+            )
+        query = query.filter(Complaint.assigned_authority_id == parsed_auth_id)
+
+    # --------------------------------------------------------
+    # Filter: start_date / end_date (inclusive, validated)
+    # --------------------------------------------------------
+    dt_start: datetime | None = None
+    dt_end: datetime | None = None
+
+    if start_date is not None and start_date.strip() != "":
+        dt_start = parse_date_param("start_date", start_date, is_end=False)
+
+    if end_date is not None and end_date.strip() != "":
+        dt_end = parse_date_param("end_date", end_date, is_end=True)
+
+    if dt_start and dt_end:
+        s_cmp = dt_start.replace(tzinfo=None) if dt_start.tzinfo else dt_start
+        e_cmp = dt_end.replace(tzinfo=None) if dt_end.tzinfo else dt_end
+        if s_cmp > e_cmp:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date range: 'start_date' cannot be after 'end_date'.",
+            )
+
+    if dt_start:
+        query = query.filter(Complaint.created_at >= dt_start)
+
+    if dt_end:
+        query = query.filter(Complaint.created_at <= dt_end)
+
     return query.all()
+
 
 
 # ============================================================
