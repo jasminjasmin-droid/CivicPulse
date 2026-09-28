@@ -1,3 +1,5 @@
+from datetime import datetime
+from typing import Optional
 from pydantic import BaseModel, EmailStr
 
 
@@ -36,3 +38,24 @@ class LoginResponse(BaseModel):
     name: str
     email: EmailStr
     role: str
+
+
+class ComplaintCreate(BaseModel):
+    title: str
+    description: str
+    category: str
+    status: Optional[str] = "Pending"
+
+
+class ComplaintResponse(BaseModel):
+    id: int
+    title: str
+    description: str
+    category: str
+    status: str
+    citizen_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True

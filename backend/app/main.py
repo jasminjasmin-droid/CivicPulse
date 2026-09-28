@@ -2,15 +2,25 @@ from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from app.database import SessionLocal
-from app.models import User
-from app.schemas import UserCreate, UserResponse, UserLogin, LoginResponse
+from app.database import SessionLocal, engine, Base
+from app.models import User, Complaint
+from app.schemas import (
+    UserCreate,
+    UserResponse,
+    UserLogin,
+    LoginResponse,
+    ComplaintCreate,
+    ComplaintResponse,
+)
 from app.security import (
     hash_password,
     verify_password,
     create_access_token,
     decode_access_token,
 )
+
+# Ensure tables are created without modifying existing database data
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="CivicPulse API",
@@ -163,3 +173,24 @@ def get_me(current_user: User = Depends(get_current_user)):
         "email": current_user.email,
         "role": current_user.role
     }
+
+
+@app.post("/complaints", response_model=ComplaintResponse, status_code=status.HTTP_201_CREATED)
+def create_complaint(
+    complaint: ComplaintCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    new_complaint = Complaint(
+        title=complaint.title,
+        description=complaint.description,
+        category=complaint.category,
+        status=complaint.status or "Pending",
+        citizen_id=current_user.id
+    )
+
+    db.add(new_complaint)
+    db.commit()
+    db.refresh(new_complaint)
+
+    return new_complaint
