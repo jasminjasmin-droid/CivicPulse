@@ -20,7 +20,7 @@ import { AnalyticsDashboardScreen } from './screens/authority/AnalyticsDashboard
 import { SuperAdminScreen } from './screens/authority/SuperAdminScreen';
 
 const MainAppContent: React.FC = () => {
-  const { activeTab, isAuthenticated } = useApp();
+  const { activeTab, isAuthenticated, isAuthLoading, apiUser } = useApp();
   const [showSplash, setShowSplash] = useState<boolean>(true);
   const [isRoleSwitcherOpen, setIsRoleSwitcherOpen] = useState<boolean>(false);
 
@@ -29,12 +29,29 @@ const MainAppContent: React.FC = () => {
     return <SplashScreen onComplete={() => setShowSplash(false)} />;
   }
 
+  // Session verification loading
+  if (isAuthLoading) {
+    return (
+      <DeviceFrame>
+        <div className="flex flex-col items-center justify-center min-h-[450px] p-6 text-slate-500">
+          <div className="w-9 h-9 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mb-3"></div>
+          <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+            Validating CivicPulse Authentication...
+          </p>
+        </div>
+      </DeviceFrame>
+    );
+  }
+
   // Authentication Guard
   if (!isAuthenticated) {
     return <AuthScreen />;
   }
 
   const renderActiveScreen = () => {
+    // RBAC Protection: Citizen cannot view staff/admin tabs
+    const isCitizen = apiUser?.role === 'citizen';
+
     switch (activeTab) {
       case 'home':
         return <HomeScreen />;
@@ -54,11 +71,11 @@ const MainAppContent: React.FC = () => {
       case 'profile':
         return <ProfileScreen />;
       case 'authority_dash':
-        return <AuthorityDashboardScreen />;
+        return isCitizen ? <HomeScreen /> : <AuthorityDashboardScreen />;
       case 'analytics':
-        return <AnalyticsDashboardScreen />;
+        return isCitizen ? <HomeScreen /> : <AnalyticsDashboardScreen />;
       case 'super_admin':
-        return <SuperAdminScreen />;
+        return isCitizen ? <HomeScreen /> : <SuperAdminScreen />;
       default:
         return <HomeScreen />;
     }

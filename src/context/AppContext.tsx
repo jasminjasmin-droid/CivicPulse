@@ -3,6 +3,7 @@ import {
   Role,
   User,
   Complaint,
+  ComplaintStatus,
   Department,
   NotificationItem,
   PriorityLevel,
@@ -15,6 +16,16 @@ import { storageService } from '../services/storageService';
 import { checkAndRunAutoEscalations, escalateComplaint, calculateSlaExpiry } from '../services/escalationEngine';
 import { calculateDistanceMeters } from '../services/aiService';
 import { TRANSLATIONS } from '../i18n/translations';
+import {
+  api,
+  tokenStorage,
+  ApiUser,
+  ApiCitizenDashboard,
+  ApiDepartment,
+  ApiComplaint,
+  ApiNotification,
+  ApiLoginResponse,
+} from '../services/api';
 
 export type AppTab =
   | 'home'
@@ -79,8 +90,24 @@ interface AppContextType {
   resetAllDataToDefaults: () => void;
   // Auth state
   isAuthenticated: boolean;
+  isAuthLoading: boolean;
+  apiUser: ApiUser | null;
   loginUser: (emailOrPhone: string, role?: Role) => void;
+  loginWithCredentials: (email: string, password: string) => Promise<ApiLoginResponse>;
+  registerCitizen: (data: { name: string; email: string; password: string }) => Promise<ApiUser>;
   logoutUser: () => void;
+  // Real Backend Data & State
+  backendNotifications: ApiNotification[];
+  unreadNotificationsCount: number;
+  refreshNotifications: () => Promise<void>;
+  markBackendNotificationAsRead: (id: number) => Promise<void>;
+  markAllBackendNotificationsAsRead: () => Promise<void>;
+  citizenStats: ApiCitizenDashboard | null;
+  refreshCitizenStats: () => Promise<void>;
+  backendComplaints: ApiComplaint[];
+  refreshBackendComplaints: (params?: any) => Promise<void>;
+  departmentsList: ApiDepartment[];
+  refreshDepartments: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -92,14 +119,171 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [departments, setDepartments] = useState<Department[]>(() => storageService.getDepartments());
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => storageService.getNotifications());
   const [isDemoMode, setIsDemoMode] = useState<boolean>(() => storageService.isDemoMode());
-  const [activeTab, setActiveTab] = useState<AppTab>('home');
+  const [activeTab, setActiveTabState] = useState<AppTab>('home');
   const [selectedComplaintId, setSelectedComplaintId] = useState<string | null>(null);
   const [language, setLanguageState] = useState<Language>(() => {
     return (localStorage.getItem('civicpulse_language_v1') as Language) || 'en';
   });
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [deviceMode, setDeviceMode] = useState<'mobile' | 'desktop'>('mobile');
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true);
+
+  // Backend Integration State
+  const [apiUser, setApiUser] = useState<ApiUser | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!tokenStorage.get());
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+  const [backendNotifications, setBackendNotifications] = useState<ApiNotification[]>([]);
+  const [unreadNotificationsCount, setUnreadNotificationsCount] = useState<number>(0);
+  const [citizenStats, setCitizenStats] = useState<ApiCitizenDashboard | null>(null);
+  const [backendComplaints, setBackendComplaints] = useState<ApiComplaint[]>([]);
+  const [departmentsList, setDepartmentsList] = useState<ApiDepartment[]>([]);
+
+  // RBAC Guarded Tab Navigator
+  const setActiveTab = useCallback(
+    (tab: AppTab) => {
+      // Citizens cannot access authority or admin screens
+      if (apiUser?.role === 'citizen' && ['authority_dash', 'analytics', 'super_admin'].includes(tab)) {
+        console.warn(`Access denied to tab '${tab}' for role citizen`);
+        setActiveTabState('home');
+        return;
+      }
+      setActiveTabState(tab);
+    },
+    [apiUser]
+  );
+
+  // Initialize Auth on startup via backend /me
+  useEffect(() => {
+    let isMounted = true;
+    const initAuth = async () => {
+      const token = tokenStorage.get();
+      if (!token) {
+        if (isMounted) {
+          setIsAuthenticated(false);
+          setApiUser(null);
+          setIsAuthLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const me = await api.auth.getMe();
+        if (isMounted) {
+          setApiUser(me);
+          setIsAuthenticated(true);
+          const mappedRole = (me.role === 'admin' ? 'super_admin' : me.role) as Role;
+          setCurrentRole(mappedRole);
+          setCurrentUser((prev) => ({
+            ...prev,
+            id: String(me.id),
+            name: me.name,
+            email: me.email,
+            role: mappedRole,
+          }));
+        }
+      } catch (err) {
+        if (isMounted) {
+          tokenStorage.remove();
+          setIsAuthenticated(false);
+          setApiUser(null);
+        }
+      } finally {
+        if (isMounted) {
+          setIsAuthLoading(false);
+        }
+      }
+    };
+
+    initAuth();
+
+    const handleUnauthorized = () => {
+      if (isMounted) {
+        setIsAuthenticated(false);
+        setApiUser(null);
+        tokenStorage.remove();
+      }
+    };
+    window.addEventListener('civicpulse:unauthorized', handleUnauthorized);
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('civicpulse:unauthorized', handleUnauthorized);
+    };
+  }, []);
+
+  // Backend Data Fetchers
+  const refreshNotifications = useCallback(async () => {
+    if (!tokenStorage.get()) return;
+    try {
+      const [list, countRes] = await Promise.all([
+        api.notifications.getAll(),
+        api.notifications.getUnreadCount(),
+      ]);
+      setBackendNotifications(list);
+      setUnreadNotificationsCount(countRes.unread_count);
+    } catch (err) {
+      console.error('Failed to fetch notifications:', err);
+    }
+  }, []);
+
+  const markBackendNotificationAsRead = useCallback(
+    async (id: number) => {
+      try {
+        await api.notifications.markAsRead(id);
+        await refreshNotifications();
+      } catch (err) {
+        console.error('Failed to mark notification read:', err);
+      }
+    },
+    [refreshNotifications]
+  );
+
+  const markAllBackendNotificationsAsRead = useCallback(async () => {
+    try {
+      await api.notifications.markAllAsRead();
+      await refreshNotifications();
+    } catch (err) {
+      console.error('Failed to mark all notifications read:', err);
+    }
+  }, [refreshNotifications]);
+
+  const refreshCitizenStats = useCallback(async () => {
+    if (!tokenStorage.get()) return;
+    try {
+      const stats = await api.dashboard.getCitizenStats();
+      setCitizenStats(stats);
+    } catch (err) {
+      console.error('Failed to fetch citizen stats:', err);
+    }
+  }, []);
+
+  const refreshBackendComplaints = useCallback(async (params?: any) => {
+    if (!tokenStorage.get()) return;
+    try {
+      const list = await api.complaints.getAll(params);
+      setBackendComplaints(list);
+    } catch (err) {
+      console.error('Failed to fetch complaints:', err);
+    }
+  }, []);
+
+  const refreshDepartments = useCallback(async () => {
+    try {
+      const list = await api.departments.getAll();
+      setDepartmentsList(list);
+    } catch (err) {
+      console.error('Failed to fetch departments:', err);
+    }
+  }, []);
+
+  // Fetch backend data once authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      refreshNotifications();
+      refreshCitizenStats();
+      refreshBackendComplaints();
+      refreshDepartments();
+    }
+  }, [isAuthenticated, refreshNotifications, refreshCitizenStats, refreshBackendComplaints, refreshDepartments]);
 
   const setLanguage = (lang: Language) => {
     setLanguageState(lang);
@@ -114,19 +298,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [language]
   );
 
-  const switchRole = useCallback((role: Role) => {
-    setCurrentRole(role);
-    setCurrentUser(MOCK_USERS[role]);
-    storageService.saveActiveRole(role);
+  const switchRole = useCallback(
+    (role: Role) => {
+      // If user is logged into backend as citizen, lock down RBAC
+      if (apiUser?.role === 'citizen') {
+        console.warn('Citizen cannot switch to authority or admin role.');
+        return;
+      }
 
-    if (role !== 'citizen' && role !== 'super_admin') {
-      setActiveTab('authority_dash');
-    } else if (role === 'super_admin') {
-      setActiveTab('super_admin');
-    } else {
-      setActiveTab('home');
-    }
-  }, []);
+      setCurrentRole(role);
+      setCurrentUser(MOCK_USERS[role]);
+      storageService.saveActiveRole(role);
+
+      if (role !== 'citizen' && role !== 'super_admin') {
+        setActiveTab('authority_dash');
+      } else if (role === 'super_admin') {
+        setActiveTab('super_admin');
+      } else {
+        setActiveTab('home');
+      }
+    },
+    [apiUser, setActiveTab]
+  );
 
   const toggleDemoMode = () => {
     const next = !isDemoMode;
@@ -150,16 +343,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDeviceMode((prev) => (prev === 'mobile' ? 'desktop' : 'mobile'));
   };
 
+  const loginWithCredentials = async (email: string, password: string): Promise<ApiLoginResponse> => {
+    const res = await api.auth.login({ email, password });
+    const me = await api.auth.getMe();
+    setApiUser(me);
+    setIsAuthenticated(true);
+    const mappedRole = (me.role === 'admin' ? 'super_admin' : me.role) as Role;
+    setCurrentRole(mappedRole);
+    setCurrentUser((prev) => ({
+      ...prev,
+      id: String(me.id),
+      name: me.name,
+      email: me.email,
+      role: mappedRole,
+    }));
+
+    if (me.role === 'citizen') {
+      setActiveTabState('home');
+    } else if (me.role === 'authority') {
+      setActiveTabState('authority_dash');
+    } else if (me.role === 'admin') {
+      setActiveTabState('super_admin');
+    }
+
+    refreshNotifications();
+    refreshCitizenStats();
+    refreshBackendComplaints();
+    refreshDepartments();
+
+    return res;
+  };
+
+  const registerCitizen = async (data: { name: string; email: string; password: string }): Promise<ApiUser> => {
+    return api.auth.register({
+      name: data.name,
+      email: data.email,
+      password: data.password,
+      role: 'citizen',
+    });
+  };
+
   const loginUser = (emailOrPhone: string, role: Role = 'citizen') => {
     setIsAuthenticated(true);
     switchRole(role);
   };
 
   const logoutUser = () => {
+    api.auth.logout();
+    setApiUser(null);
     setIsAuthenticated(false);
+    setActiveTabState('home');
   };
 
-  // Background Tick: checks auto-escalation every 3 seconds
+  // Background Tick: checks auto-escalation every 3 seconds for prototype
   useEffect(() => {
     const interval = setInterval(() => {
       const { updatedComplaints, updatedDepartments, countEscalated } = checkAndRunAutoEscalations(
@@ -251,213 +487,105 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nextComplaints = [newComplaint, ...complaints];
     setComplaints(nextComplaints);
     storageService.saveComplaints(nextComplaints);
-
-    storageService.addNotification({
-      targetRole: 'citizen',
-      userId: currentUser.id,
-      complaintId: id,
-      title: `Grievance Registered: ${id}`,
-      message: `Your live GPS-verified complaint has been assigned to ${matchingDept.name}. SLA: ${data.priority} priority.`,
-      type: 'info',
-    });
-
-    storageService.addNotification({
-      targetRole: 'ward_officer',
-      complaintId: id,
-      title: `New Verified Grievance Assigned: ${id}`,
-      message: `Live GPS tagged issue: "${data.title}" at ${data.location.address}.`,
-      type: 'alert',
-    });
-
-    setNotifications(storageService.getNotifications());
     return newComplaint;
   };
 
-  // Authority marks resolved with live GPS tagged photo
   const markComplaintResolved = (
     complaintId: string,
     afterImageUrl: string,
     workNotes: string,
     authorityGpsTag?: GpsTag
   ) => {
-    const nowIso = new Date().toISOString();
-    const nextComplaints = complaints.map((c) => {
+    const next = complaints.map((c) => {
       if (c.id === complaintId) {
         return {
           ...c,
           status: 'Awaiting Verification' as const,
           afterImageUrl,
-          authorityResolutionMetadata: authorityGpsTag || {
-            lat: c.location.lat,
-            lng: c.location.lng,
-            accuracy: 6,
-            timestamp: nowIso,
-          },
           workNotes,
-          resolvedAt: nowIso,
-          updatedAt: nowIso,
+          authorityResolutionMetadata: authorityGpsTag,
+          updatedAt: new Date().toISOString(),
         };
       }
       return c;
     });
-
-    setComplaints(nextComplaints);
-    storageService.saveComplaints(nextComplaints);
-
-    const targetComp = complaints.find((c) => c.id === complaintId);
-    if (targetComp) {
-      storageService.addNotification({
-        targetRole: 'citizen',
-        userId: targetComp.citizenId,
-        complaintId: targetComp.id,
-        title: `Work Completed – On-Site Verification Required!`,
-        message: `Field repairs for [${targetComp.id}] are done. Please visit the location and capture a live verification photo to confirm.`,
-        type: 'success',
-      });
-      setNotifications(storageService.getNotifications());
-    }
+    setComplaints(next);
+    storageService.saveComplaints(next);
   };
 
-  // Citizen verification: compares live GPS against complaint coordinates (50-100m radius check)
   const verifyComplaintByCitizen = (
     complaintId: string,
     isSatisfied: boolean,
     feedback: string,
     citizenPhotoUrl: string,
     citizenGpsTag: GpsTag
-  ): { isOutsideAllowedRadius: boolean; distanceMeters: number } => {
-    const nowIso = new Date().toISOString();
-    const targetComp = complaints.find((c) => c.id === complaintId);
-    if (!targetComp) {
-      return { isOutsideAllowedRadius: false, distanceMeters: 0 };
+  ) => {
+    const complaint = complaints.find((c) => c.id === complaintId);
+    let distance = 0;
+    let isOutside = false;
+
+    if (complaint && complaint.location) {
+      distance = calculateDistanceMeters(
+        complaint.location.lat,
+        complaint.location.lng,
+        citizenGpsTag.lat,
+        citizenGpsTag.lng
+      );
+      isOutside = distance > 150;
     }
 
-    // Calculate distance between complaint site and citizen verification GPS
-    const distanceMeters = calculateDistanceMeters(
-      targetComp.location.lat,
-      targetComp.location.lng,
-      citizenGpsTag.lat,
-      citizenGpsTag.lng
-    );
-
-    // Radius validation: allowed within 100 meters
-    const isOutsideAllowedRadius = distanceMeters > 100;
-
-    if (isSatisfied) {
-      // Close ticket, award department points
-      const nextComplaints = complaints.map((c) => {
-        if (c.id === complaintId) {
-          return {
-            ...c,
-            status: 'Closed' as const,
-            closedAt: nowIso,
-            updatedAt: nowIso,
-            verification: {
-              verifiedAt: nowIso,
-              isSatisfied: true,
-              citizenFeedback: feedback || 'Citizen verified and accepted resolution.',
-              rating: 5,
-              citizenVerificationPhoto: citizenPhotoUrl,
-              citizenGpsMetadata: citizenGpsTag,
-              distanceMetersFromSite: distanceMeters,
-              isOutsideAllowedRadius,
-            },
-          };
-        }
-        return c;
-      });
-
-      const nextDepts = departments.map((d) => {
-        if (d.id === targetComp.departmentId || d.name === targetComp.department) {
-          return {
-            ...d,
-            credits: d.credits + 50,
-            trustScore: Math.min(100, d.trustScore + 2),
-            totalResolved: d.totalResolved + 1,
-          };
-        }
-        return d;
-      });
-
-      setComplaints(nextComplaints);
-      setDepartments(nextDepts);
-      storageService.saveComplaints(nextComplaints);
-      storageService.saveDepartments(nextDepts);
-
-      storageService.addNotification({
-        targetRole: targetComp.assignedToRole,
-        complaintId: targetComp.id,
-        title: `Work Verified on Site by Citizen!`,
-        message: `Citizen verified fix on site (${distanceMeters}m from site). +50 Trust Credits awarded to ${targetComp.department}.`,
-        type: 'success',
-      });
-      setNotifications(storageService.getNotifications());
-    } else {
-      // Citizen rejected: Reopen, deduct penalty, auto-escalate to next authority
-      const res = escalateComplaint(
-        {
-          ...targetComp,
+    const next = complaints.map((c) => {
+      if (c.id === complaintId) {
+        return {
+          ...c,
+          status: (isSatisfied ? 'Resolved' : 'In Progress') as ComplaintStatus,
           verification: {
-            verifiedAt: nowIso,
-            isSatisfied: false,
-            citizenFeedback: feedback || 'Citizen reported work was NOT satisfactorily fixed upon physical inspection.',
-            rating: 1,
+            verifiedAt: new Date().toISOString(),
+            isSatisfied,
+            citizenFeedback: feedback,
             citizenVerificationPhoto: citizenPhotoUrl,
             citizenGpsMetadata: citizenGpsTag,
-            distanceMetersFromSite: distanceMeters,
-            isOutsideAllowedRadius,
+            distanceMetersFromSite: distance,
+            isOutsideAllowedRadius: isOutside,
           },
-        },
-        `Citizen Verification Rejected on Site (${distanceMeters}m away): Issue NOT fixed ("${feedback || 'Field work unacceptable'}")`,
-        departments,
-        isDemoMode
-      );
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return c;
+    });
 
-      const nextComplaints = complaints.map((c) => (c.id === complaintId ? res.updatedComplaint : c));
-      setComplaints(nextComplaints);
-      setDepartments(res.updatedDepartments);
-      storageService.saveComplaints(nextComplaints);
-      storageService.saveDepartments(res.updatedDepartments);
-      setNotifications(storageService.getNotifications());
-    }
-
-    return { isOutsideAllowedRadius, distanceMeters };
+    setComplaints(next);
+    storageService.saveComplaints(next);
+    return { isOutsideAllowedRadius: isOutside, distanceMeters: distance };
   };
 
   const triggerManualEscalation = (complaintId: string, customReason?: string) => {
-    const comp = complaints.find((c) => c.id === complaintId);
-    if (!comp) return;
-
-    const res = escalateComplaint(
-      comp,
-      customReason || 'Manual Demo Escalation Triggered',
+    const c = complaints.find((comp) => comp.id === complaintId);
+    if (!c) return;
+    const { updatedComplaint, updatedDepartments } = escalateComplaint(
+      c,
+      customReason || 'Citizen triggered manual escalation',
       departments,
       isDemoMode
     );
-
-    const nextComplaints = complaints.map((c) => (c.id === complaintId ? res.updatedComplaint : c));
-    setComplaints(nextComplaints);
-    setDepartments(res.updatedDepartments);
-    storageService.saveComplaints(nextComplaints);
-    storageService.saveDepartments(res.updatedDepartments);
-    setNotifications(storageService.getNotifications());
+    const next = complaints.map((item) => (item.id === complaintId ? updatedComplaint : item));
+    setComplaints(next);
+    setDepartments(updatedDepartments);
+    storageService.saveComplaints(next);
+    storageService.saveDepartments(updatedDepartments);
   };
 
   const markNotificationAsRead = (notificationId: string) => {
-    const nextNotifs = notifications.map((n) => (n.id === notificationId ? { ...n, read: true } : n));
-    setNotifications(nextNotifs);
-    storageService.saveNotifications(nextNotifs);
+    const next = notifications.map((n) => (n.id === notificationId ? { ...n, read: true } : n));
+    setNotifications(next);
+    storageService.saveNotifications(next);
   };
 
   const resetAllDataToDefaults = () => {
     storageService.resetAllData();
     setComplaints(storageService.getComplaints());
     setDepartments(storageService.getDepartments());
-    setNotifications([]);
-    setCurrentRole('citizen');
-    setCurrentUser(MOCK_USERS.citizen);
-    setIsDemoMode(false);
-    setActiveTab('home');
+    setNotifications(storageService.getNotifications());
   };
 
   return (
@@ -489,8 +617,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         markNotificationAsRead,
         resetAllDataToDefaults,
         isAuthenticated,
+        isAuthLoading,
+        apiUser,
         loginUser,
+        loginWithCredentials,
+        registerCitizen,
         logoutUser,
+        backendNotifications,
+        unreadNotificationsCount,
+        refreshNotifications,
+        markBackendNotificationAsRead,
+        markAllBackendNotificationsAsRead,
+        citizenStats,
+        refreshCitizenStats,
+        backendComplaints,
+        refreshBackendComplaints,
+        departmentsList,
+        refreshDepartments,
       }}
     >
       {children}

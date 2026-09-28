@@ -1,137 +1,45 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   PlusCircle,
   Search,
-  Bot,
-  MapPin,
-  PhoneCall,
-  Award,
-  Bell,
   CheckCircle2,
-  TrendingUp,
   Clock,
   Sparkles,
   ShieldCheck,
   ArrowRight,
-  Shield,
-  Layers,
+  AlertCircle,
+  RefreshCw,
+  FolderOpen,
 } from 'lucide-react';
-import { useApp, AppTab } from '../context/AppContext';
+import { useApp } from '../context/AppContext';
 
 export const HomeScreen: React.FC = () => {
   const {
     currentUser,
-    complaints,
     setActiveTab,
     setSelectedComplaintId,
+    citizenStats,
+    refreshCitizenStats,
+    backendComplaints,
+    refreshBackendComplaints,
     t,
   } = useApp();
 
-  const citizenComplaints = complaints.filter(
-    (c) => c.citizenId === currentUser.id || currentUser.role !== 'citizen'
-  );
-  const totalCount = citizenComplaints.length;
-  const inProgressCount = citizenComplaints.filter((c) =>
-    ['Submitted', 'Assigned', 'In Progress', 'Escalated'].includes(c.status)
-  ).length;
-  const awaitingVerification = citizenComplaints.filter(
-    (c) => c.status === 'Awaiting Verification'
-  );
-  const resolvedCount = citizenComplaints.filter((c) =>
-    ['Resolved', 'Closed'].includes(c.status)
-  ).length;
+  const [isLoading, setIsLoading] = useState(false);
 
-  // The 8 clean, uncongested dashboard sections requested by user:
-  const dashboardSections: {
-    id: AppTab;
-    title: string;
-    description: string;
-    icon: any;
-    iconBg: string;
-    iconColor: string;
-    accentBorder: string;
-    badge?: string;
-  }[] = [
-    {
-      id: 'report',
-      title: t('actionReportTitle'),
-      description: t('actionReportDesc'),
-      icon: PlusCircle,
-      iconBg: 'bg-[#1565C0]/10 dark:bg-blue-950/60',
-      iconColor: 'text-[#1565C0] dark:text-blue-400',
-      accentBorder: 'hover:border-[#1565C0]',
-      badge: 'AI Smart',
-    },
-    {
-      id: 'track',
-      title: t('actionTrackTitle'),
-      description: t('actionTrackDesc'),
-      icon: Search,
-      iconBg: 'bg-[#26A69A]/10 dark:bg-teal-950/60',
-      iconColor: 'text-[#26A69A] dark:text-teal-400',
-      accentBorder: 'hover:border-[#26A69A]',
-      badge: `${inProgressCount} Active`,
-    },
-    {
-      id: 'nearby',
-      title: t('actionNearbyTitle'),
-      description: t('actionNearbyDesc'),
-      icon: MapPin,
-      iconBg: 'bg-emerald-500/10 dark:bg-emerald-950/60',
-      iconColor: 'text-[#43A047] dark:text-emerald-400',
-      accentBorder: 'hover:border-[#43A047]',
-      badge: 'Live GPS',
-    },
-    {
-      id: 'ai',
-      title: t('actionAiTitle'),
-      description: t('actionAiDesc'),
-      icon: Bot,
-      iconBg: 'bg-purple-500/10 dark:bg-purple-950/60',
-      iconColor: 'text-purple-600 dark:text-purple-400',
-      accentBorder: 'hover:border-purple-500',
-      badge: '24/7 Bot',
-    },
-    {
-      id: 'emergency',
-      title: t('actionEmergencyTitle'),
-      description: t('actionEmergencyDesc'),
-      icon: PhoneCall,
-      iconBg: 'bg-rose-500/10 dark:bg-rose-950/60',
-      iconColor: 'text-[#E53935] dark:text-rose-400',
-      accentBorder: 'hover:border-[#E53935]',
-      badge: 'SOS 112',
-    },
-    {
-      id: 'trust',
-      title: t('actionLeaderboardTitle'),
-      description: t('actionLeaderboardDesc'),
-      icon: Award,
-      iconBg: 'bg-amber-500/10 dark:bg-amber-950/60',
-      iconColor: 'text-[#FB8C00] dark:text-amber-400',
-      accentBorder: 'hover:border-[#FB8C00]',
-      badge: 'Statewide',
-    },
-    {
-      id: 'trust',
-      title: t('actionTrustTitle'),
-      description: t('actionTrustDesc'),
-      icon: TrendingUp,
-      iconBg: 'bg-[#1565C0]/10 dark:bg-blue-950/60',
-      iconColor: 'text-[#1565C0] dark:text-blue-400',
-      accentBorder: 'hover:border-[#1565C0]',
-    },
-    {
-      id: 'track',
-      title: t('actionNotificationsTitle'),
-      description: t('actionNotificationsDesc'),
-      icon: Bell,
-      iconBg: 'bg-indigo-500/10 dark:bg-indigo-950/60',
-      iconColor: 'text-indigo-600 dark:text-indigo-400',
-      accentBorder: 'hover:border-indigo-500',
-      badge: 'Alerts',
-    },
-  ];
+  useEffect(() => {
+    setIsLoading(true);
+    Promise.all([refreshCitizenStats(), refreshBackendComplaints()]).finally(() => {
+      setIsLoading(false);
+    });
+  }, [refreshCitizenStats, refreshBackendComplaints]);
+
+  const total = citizenStats?.total ?? 0;
+  const pending = citizenStats?.pending ?? 0;
+  const inProgress = citizenStats?.in_progress ?? 0;
+  const resolved = citizenStats?.resolved ?? 0;
+
+  const recentComplaints = backendComplaints.slice(0, 4);
 
   return (
     <div className="p-4 sm:p-6 space-y-6 pb-28 max-w-4xl mx-auto">
@@ -141,206 +49,199 @@ export const HomeScreen: React.FC = () => {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/15 backdrop-blur-md text-xs font-semibold tracking-wide uppercase border border-white/20">
               <ShieldCheck className="w-3.5 h-3.5 text-[#FFB300]" />
-              <span>{currentUser.ward || 'Chennai • T. Nagar'}</span>
+              <span>Official Citizen Dashboard</span>
             </div>
-            <div className="flex items-center gap-1.5 text-xs font-bold text-[#FFB300] bg-black/20 px-3 py-1 rounded-full border border-[#FFB300]/40">
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>{currentUser.reputationScore || 420} {t('civicCredits')}</span>
-            </div>
+            <button
+              onClick={() => {
+                setIsLoading(true);
+                Promise.all([refreshCitizenStats(), refreshBackendComplaints()]).finally(() =>
+                  setIsLoading(false)
+                );
+              }}
+              title="Refresh Statistics"
+              className="flex items-center gap-1.5 text-xs font-medium text-white/90 bg-white/10 hover:bg-white/20 px-2.5 py-1 rounded-full border border-white/20 transition active:scale-95"
+            >
+              <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
           </div>
 
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight">
-              {t('welcomeCitizen')}, {currentUser.name.split(' ')[0]} 👋
+              Welcome, {currentUser.name.split(' ')[0]} 👋
             </h1>
             <p className="text-sm text-blue-100 mt-1 max-w-xl font-normal leading-relaxed">
-              {t('tagline')}
+              CivicPulse Smart Governance Portal — Track grievances, upload evidence, and monitor SLA redressals in real time.
             </p>
           </div>
 
-          {/* Clean Metric Counters */}
-          <div className="grid grid-cols-3 gap-3 pt-3 border-t border-white/20 text-center">
-            <div className="bg-white/10 rounded-2xl p-3 backdrop-blur-xs">
-              <div className="text-xl font-black">{totalCount}</div>
-              <div className="text-xs text-blue-100 font-medium">{t('totalReported')}</div>
-            </div>
-            <div className="bg-white/10 rounded-2xl p-3 backdrop-blur-xs">
-              <div className="text-xl font-black text-[#FFB300]">{inProgressCount}</div>
-              <div className="text-xs text-blue-100 font-medium">{t('activeSla')}</div>
-            </div>
-            <div className="bg-white/10 rounded-2xl p-3 backdrop-blur-xs">
-              <div className="text-xl font-black text-emerald-300">{resolvedCount}</div>
-              <div className="text-xs text-blue-100 font-medium">{t('resolvedComplaints')}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Action Required: Citizen Verification Banner */}
-      {awaitingVerification.length > 0 && (
-        <div className="rounded-3xl p-5 bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/40 dark:to-teal-950/30 border-2 border-[#43A047] shadow-soft-md">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div className="flex items-start gap-3.5">
-              <div className="w-12 h-12 rounded-2xl bg-[#43A047] text-white flex items-center justify-center shrink-0 shadow-md">
-                <CheckCircle2 className="w-6 h-6" />
-              </div>
-              <div>
-                <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#43A047] bg-emerald-100 dark:bg-emerald-900/60 px-2.5 py-0.5 rounded-full">
-                  {t('actionRequired')}
-                </span>
-                <h3 className="text-sm font-bold text-[#263238] dark:text-white mt-1">
-                  {awaitingVerification[0].title}
-                </h3>
-                <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                  {t('verifyWorkMsg')}
-                </p>
-              </div>
-            </div>
-
+          {/* Quick Actions inside banner */}
+          <div className="pt-2 flex flex-wrap gap-2.5">
             <button
-              onClick={() => {
-                setSelectedComplaintId(awaitingVerification[0].id);
-                setActiveTab('track');
-              }}
-              className="w-full sm:w-auto px-5 py-2.5 rounded-2xl bg-[#43A047] hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition flex items-center justify-center gap-2 shrink-0 active:scale-95"
+              onClick={() => setActiveTab('report')}
+              className="px-4 py-2 bg-white text-[#1565C0] hover:bg-blue-50 font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
             >
-              <span>{t('inspectVerify')}</span>
-              <ArrowRight className="w-4 h-4" />
+              <PlusCircle className="w-4 h-4 text-[#1565C0]" />
+              File New Complaint
+            </button>
+            <button
+              onClick={() => setActiveTab('track')}
+              className="px-4 py-2 bg-white/15 hover:bg-white/25 text-white font-semibold text-xs rounded-xl border border-white/20 transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <Search className="w-4 h-4" />
+              View My Complaints
             </button>
           </div>
         </div>
-      )}
-
-      {/* Official City Bulletin */}
-      <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-800 border border-[#CFD8DC]/80 dark:border-slate-700 flex items-center gap-3 shadow-soft-sm">
-        <div className="p-2 rounded-xl bg-[#1565C0]/10 text-[#1565C0] shrink-0">
-          <TrendingUp className="w-4 h-4" />
-        </div>
-        <div className="flex-1 min-w-0 text-xs text-[#263238] dark:text-slate-200">
-          <strong className="font-bold text-[#1565C0] dark:text-blue-400">{t('cityBulletin')}: </strong>
-          <span>{t('bulletinMsg')}</span>
-        </div>
       </div>
 
-      {/* The 8 Spacious, Clean Governance Cards */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between px-1">
-          <h2 className="text-xs font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            Smart Governance Services
+      {/* FEATURE 17 - CITIZEN DASHBOARD METRIC CARDS */}
+      <div>
+        <div className="flex items-center justify-between mb-3 px-1">
+          <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+            Grievance Statistics (GET /dashboard)
           </h2>
-          <span className="text-xs text-[#1565C0] dark:text-blue-400 font-semibold">
-            8 Sections Active
-          </span>
+          <span className="text-[11px] text-slate-400">Authenticated Citizen Metrics</span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {dashboardSections.map((sec, idx) => {
-            const Icon = sec.icon;
-
-            return (
-              <div
-                key={idx}
-                onClick={() => setActiveTab(sec.id)}
-                className={`group p-5 rounded-3xl bg-white dark:bg-slate-800 border border-[#CFD8DC]/80 dark:border-slate-700 shadow-soft-sm hover:shadow-soft-md transition-all duration-200 cursor-pointer flex items-start gap-4 ${sec.accentBorder} active:scale-[0.99]`}
-              >
-                {/* Large Icon Box */}
-                <div
-                  className={`w-14 h-14 rounded-2xl ${sec.iconBg} ${sec.iconColor} flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform`}
-                >
-                  <Icon className="w-7 h-7 stroke-[2]" />
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1">
-                    <h3 className="font-extrabold text-sm text-[#263238] dark:text-white group-hover:text-[#1565C0] dark:group-hover:text-blue-400 transition-colors">
-                      {sec.title}
-                    </h3>
-                    {sec.badge && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
-                        {sec.badge}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 line-clamp-2 leading-relaxed">
-                    {sec.description}
-                  </p>
-                </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+          {/* Card 1: Total */}
+          <div className="bg-white dark:bg-slate-800/90 rounded-2xl p-4 border border-blue-100 dark:border-slate-700 shadow-soft-sm flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Total</span>
+              <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-[#1565C0] dark:text-blue-400 flex items-center justify-center">
+                <FolderOpen className="w-4 h-4" />
               </div>
-            );
-          })}
+            </div>
+            <div className="mt-3">
+              <div className="text-2xl font-black text-slate-900 dark:text-white">
+                {isLoading ? '...' : total}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">Complaints filed</p>
+            </div>
+          </div>
+
+          {/* Card 2: Pending */}
+          <div className="bg-white dark:bg-slate-800/90 rounded-2xl p-4 border border-amber-100 dark:border-slate-700 shadow-soft-sm flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Pending</span>
+              <div className="w-8 h-8 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+                <Clock className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="mt-3">
+              <div className="text-2xl font-black text-amber-600 dark:text-amber-400">
+                {isLoading ? '...' : pending}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">Awaiting assignment</p>
+            </div>
+          </div>
+
+          {/* Card 3: In Progress */}
+          <div className="bg-white dark:bg-slate-800/90 rounded-2xl p-4 border border-sky-100 dark:border-slate-700 shadow-soft-sm flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">In Progress</span>
+              <div className="w-8 h-8 rounded-xl bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 flex items-center justify-center">
+                <AlertCircle className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="mt-3">
+              <div className="text-2xl font-black text-sky-600 dark:text-sky-400">
+                {isLoading ? '...' : inProgress}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">Under official redressal</p>
+            </div>
+          </div>
+
+          {/* Card 4: Resolved */}
+          <div className="bg-white dark:bg-slate-800/90 rounded-2xl p-4 border border-emerald-100 dark:border-slate-700 shadow-soft-sm flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Resolved</span>
+              <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                <CheckCircle2 className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="mt-3">
+              <div className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+                {isLoading ? '...' : resolved}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">Successfully closed</p>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Recent Complaints in Area */}
-      <div className="space-y-3 pt-2">
-        <div className="flex items-center justify-between px-1">
-          <h2 className="text-xs font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            {t('recentComplaintsTitle')}
-          </h2>
+      {/* RECENT COMPLAINTS PREVIEW */}
+      <div className="bg-white dark:bg-slate-800/90 rounded-3xl p-5 border border-slate-200/80 dark:border-slate-700/80 shadow-soft-md">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+              Recent Complaints
+            </h3>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Live updates from CivicPulse grievance tracker
+            </p>
+          </div>
           <button
             onClick={() => setActiveTab('track')}
-            className="text-xs text-[#1565C0] dark:text-blue-400 font-bold hover:underline flex items-center gap-1"
+            className="text-xs font-bold text-[#1565C0] dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
           >
-            <span>{t('viewAll')}</span>
+            <span>View All</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <div className="space-y-3">
-          {complaints.slice(0, 3).map((comp) => {
-            const isEsc = comp.isEscalated || comp.status === 'Escalated';
-            const isDone = comp.status === 'Resolved' || comp.status === 'Closed';
-
-            return (
+        {recentComplaints.length === 0 ? (
+          <div className="py-8 text-center text-xs text-slate-400">
+            No complaints submitted yet. Click "File New Complaint" above to register a civic issue.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100 dark:divide-slate-700/60">
+            {recentComplaints.map((c) => (
               <div
-                key={comp.id}
+                key={c.id}
                 onClick={() => {
-                  setSelectedComplaintId(comp.id);
+                  setSelectedComplaintId(String(c.id));
                   setActiveTab('track');
                 }}
-                className="p-4 rounded-3xl bg-white dark:bg-slate-800 border border-[#CFD8DC]/80 dark:border-slate-700 shadow-soft-sm hover:shadow-soft-md transition cursor-pointer flex items-center gap-4"
+                className="py-3 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-750 px-2 rounded-xl transition cursor-pointer"
               >
-                <img
-                  src={comp.beforeImageUrl}
-                  alt={comp.title}
-                  className="w-16 h-16 rounded-2xl object-cover shrink-0 border border-slate-200 dark:border-slate-700"
-                />
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1">
+                <div className="min-w-0 pr-3">
+                  <div className="flex items-center gap-2">
                     <span className="text-xs font-mono font-bold text-[#1565C0] dark:text-blue-400">
-                      {comp.id}
+                      #{c.id}
                     </span>
-                    <span
-                      className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full ${
-                        isEsc
-                          ? 'bg-red-100 text-[#E53935] dark:bg-red-950 dark:text-red-300'
-                          : isDone
-                          ? 'bg-emerald-100 text-[#43A047] dark:bg-emerald-950 dark:text-emerald-300'
-                          : 'bg-blue-100 text-[#1565C0] dark:bg-blue-950 dark:text-blue-300'
-                      }`}
-                    >
-                      {comp.status}
-                    </span>
+                    <h4 className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">
+                      {c.title}
+                    </h4>
                   </div>
-
-                  <h4 className="font-bold text-xs text-[#263238] dark:text-slate-100 truncate mt-1">
-                    {comp.title}
-                  </h4>
-
                   <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-                    <span className="truncate max-w-[140px]">{comp.department}</span>
-                    <span>•</span>
-                    <span className="flex items-center gap-1 font-semibold text-slate-600 dark:text-slate-300">
-                      <Clock className="w-3 h-3 text-[#FB8C00]" />
-                      {comp.priority}
+                    <span className="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 font-medium">
+                      {c.category}
                     </span>
+                    <span>•</span>
+                    <span>{new Date(c.created_at).toLocaleDateString()}</span>
                   </div>
                 </div>
+
+                <div className="shrink-0 flex items-center gap-2">
+                  <span
+                    className={`text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider ${
+                      c.status === 'Resolved'
+                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                        : c.status === 'In Progress'
+                        ? 'bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300'
+                        : 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                    }`}
+                  >
+                    {c.status}
+                  </span>
+                  <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
+                </div>
               </div>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

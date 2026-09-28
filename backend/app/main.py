@@ -14,6 +14,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from fastapi import status as http_status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import text, func, case
 from sqlalchemy.orm import Session
@@ -33,6 +34,15 @@ from app.schemas import (
     UserLogin,
     LoginResponse,
     DepartmentResponse,
+    DepartmentCreate,
+    UserRoleUpdate,
+    AdminDashboardResponse,
+    AnalyticsOverviewResponse,
+    CategoryCountItem,
+    DepartmentCountItem,
+    StatusCountItem,
+    PriorityCountItem,
+    TrendCountItem,
     ComplaintCreate,
     ComplaintResponse,
     ComplaintStatusUpdate,
@@ -186,6 +196,14 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 security = HTTPBearer(auto_error=False)
 
 
@@ -293,6 +311,32 @@ def get_current_authority(
     return current_user
 
 
+def get_current_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: admin role required",
+        )
+
+    return current_user
+
+
+def get_current_staff(
+    current_user: User = Depends(get_current_user),
+) -> User:
+
+    if current_user.role not in ("authority", "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: authority or admin role required",
+        )
+
+    return current_user
+
+
 # ============================================================
 # ROOT / HEALTH
 # ============================================================
@@ -327,6 +371,12 @@ def create_user(
         raise HTTPException(
             status_code=400,
             detail="Email already registered",
+        )
+
+    if user.role == "admin":
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail="Registration with admin role is not permitted",
         )
 
     new_user = User(
@@ -683,7 +733,7 @@ def get_complaints(
     # --------------------------------------------------------
     # Keep existing access control
     # --------------------------------------------------------
-    if current_user.role == "authority":
+    if current_user.role in ("authority", "admin"):
         query = db.query(Complaint)
     else:
         query = db.query(Complaint).filter(
@@ -823,7 +873,7 @@ def get_complaint(
         )
 
     if (
-        current_user.role != "authority"
+        current_user.role not in ("authority", "admin")
         and complaint.citizen_id != current_user.id
     ):
         raise HTTPException(
@@ -1221,9 +1271,9 @@ def get_complaint_history(
             detail="Complaint not found",
         )
 
-    # Only owner citizen or authority can view history
+    # Only owner citizen, authority, or admin can view history
     if (
-        current_user.role != "authority"
+        current_user.role not in ("authority", "admin")
         and complaint.citizen_id != current_user.id
     ):
         raise HTTPException(
@@ -1292,9 +1342,9 @@ async def upload_complaint_evidence(
             detail="Complaint not found",
         )
 
-    # Only owner citizen or authority can upload evidence
+    # Only owner citizen, authority, or admin can upload evidence
     if (
-        current_user.role != "authority"
+        current_user.role not in ("authority", "admin")
         and complaint.citizen_id != current_user.id
     ):
         raise HTTPException(
@@ -1421,9 +1471,9 @@ def get_complaint_evidence_list(
             detail="Complaint not found",
         )
 
-    # Owner citizen or authority only
+    # Owner citizen, authority, or admin only
     if (
-        current_user.role != "authority"
+        current_user.role not in ("authority", "admin")
         and complaint.citizen_id != current_user.id
     ):
         raise HTTPException(
@@ -1470,7 +1520,7 @@ def download_complaint_evidence(
         )
 
     if (
-        current_user.role != "authority"
+        current_user.role not in ("authority", "admin")
         and complaint.citizen_id != current_user.id
     ):
         raise HTTPException(
@@ -1602,3 +1652,308 @@ def mark_notification_as_read(
         db.refresh(notification)
 
     return notification
+
+
+# ============================================================
+# ADMIN ENDPOINTS
+# ============================================================
+
+@app.get("/admin/dashboard", response_model=AdminDashboardResponse)
+def get_admin_dashboard(
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    user_counts = db.query(
+        func.count(User.id).label("total_users"),
+        func.count(case((User.role == "citizen", 1))).label("total_citizens"),
+        func.count(case((User.role == "authority", 1))).label("total_authorities"),
+        func.count(case((User.role == "admin", 1))).label("total_admins"),
+    ).first()
+
+    complaint_counts = db.query(
+        func.count(Complaint.id).label("total_complaints"),
+        func.count(case((Complaint.status == "Pending", 1))).label("pending"),
+        func.count(case((Complaint.status == "In Progress", 1))).label("in_progress"),
+        func.count(case((Complaint.status == "Resolved", 1))).label("resolved"),
+    ).first()
+
+    unread_notifs = db.query(Notification).filter(Notification.is_read == False).count()
+
+    return AdminDashboardResponse(
+        total_users=user_counts.total_users or 0,
+        total_citizens=user_counts.total_citizens or 0,
+        total_authorities=user_counts.total_authorities or 0,
+        total_admins=user_counts.total_admins or 0,
+        total_complaints=complaint_counts.total_complaints or 0,
+        pending_complaints=complaint_counts.pending or 0,
+        in_progress_complaints=complaint_counts.in_progress or 0,
+        resolved_complaints=complaint_counts.resolved or 0,
+        unread_notifications=unread_notifs,
+    )
+
+
+@app.get("/admin/users", response_model=list[UserResponse])
+def get_admin_users(
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    return db.query(User).order_by(User.id.asc()).all()
+
+
+@app.patch("/admin/users/{user_id}/role", response_model=UserResponse)
+def update_user_role(
+    user_id: int,
+    role_update: UserRoleUpdate,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    allowed_roles = {"citizen", "authority", "admin"}
+    new_role = role_update.role.strip().lower()
+    if new_role not in allowed_roles:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role '{role_update.role}'. Allowed roles: citizen, authority, admin.",
+        )
+
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # Do not allow an admin to accidentally remove their own final admin access
+    if target_user.id == current_admin.id and new_role != "admin":
+        admin_count = db.query(User).filter(User.role == "admin").count()
+        if admin_count <= 1:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Cannot remove admin role: at least one active admin must remain",
+            )
+
+    target_user.role = new_role
+    db.commit()
+    db.refresh(target_user)
+    return target_user
+
+
+@app.get("/admin/complaints", response_model=list[ComplaintResponse])
+def get_admin_complaints(
+    search: str | None = None,
+    status: str | None = None,
+    category: str | None = None,
+    priority: str | None = None,
+    department_id: str | None = None,
+    assigned_authority_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    return get_complaints(
+        search=search,
+        status=status,
+        category=category,
+        priority=priority,
+        department_id=department_id,
+        assigned_authority_id=assigned_authority_id,
+        start_date=start_date,
+        end_date=end_date,
+        db=db,
+        current_user=current_admin,
+    )
+
+
+@app.get("/admin/departments", response_model=list[DepartmentResponse])
+def get_admin_departments(
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    return db.query(Department).order_by(Department.id.asc()).all()
+
+
+@app.post(
+    "/admin/departments",
+    response_model=DepartmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_admin_department(
+    dept: DepartmentCreate,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    clean_name = dept.name.strip()
+    if not clean_name:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail="Department name cannot be empty",
+        )
+
+    existing = (
+        db.query(Department)
+        .filter(func.lower(Department.name) == clean_name.lower())
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=f"Department '{clean_name}' already exists",
+        )
+
+    new_dept = Department(
+        name=clean_name,
+        description=dept.description.strip() if dept.description else None,
+    )
+    db.add(new_dept)
+    db.commit()
+    db.refresh(new_dept)
+    return new_dept
+
+
+# ============================================================
+# ANALYTICS & REPORTS
+# ============================================================
+
+@app.get("/analytics/overview", response_model=AnalyticsOverviewResponse)
+def get_analytics_overview(
+    db: Session = Depends(get_db),
+    current_staff: User = Depends(get_current_staff),
+):
+    row = db.query(
+        func.count(Complaint.id).label("total"),
+        func.count(case((Complaint.status == "Pending", 1))).label("pending"),
+        func.count(case((Complaint.status == "In Progress", 1))).label("in_progress"),
+        func.count(case((Complaint.status == "Resolved", 1))).label("resolved"),
+    ).first()
+
+    total = row.total or 0
+    resolved = row.resolved or 0
+    res_rate = round((resolved / total * 100), 2) if total > 0 else 0.0
+
+    return AnalyticsOverviewResponse(
+        total=total,
+        pending=row.pending or 0,
+        in_progress=row.in_progress or 0,
+        resolved=resolved,
+        resolution_rate=res_rate,
+    )
+
+
+@app.get("/analytics/categories", response_model=list[CategoryCountItem])
+def get_analytics_categories(
+    db: Session = Depends(get_db),
+    current_staff: User = Depends(get_current_staff),
+):
+    rows = (
+        db.query(Complaint.category, func.count(Complaint.id).label("count"))
+        .group_by(Complaint.category)
+        .order_by(func.count(Complaint.id).desc())
+        .all()
+    )
+    return [CategoryCountItem(category=r[0], count=r[1]) for r in rows]
+
+
+@app.get("/analytics/departments", response_model=list[DepartmentCountItem])
+def get_analytics_departments(
+    db: Session = Depends(get_db),
+    current_staff: User = Depends(get_current_staff),
+):
+    dept_rows = (
+        db.query(
+            Department.id,
+            Department.name,
+            func.count(Complaint.id).label("count"),
+        )
+        .outerjoin(Complaint, Complaint.department_id == Department.id)
+        .group_by(Department.id, Department.name)
+        .order_by(Department.id.asc())
+        .all()
+    )
+    result = [
+        DepartmentCountItem(department_id=r[0], department_name=r[1], count=r[2])
+        for r in dept_rows
+    ]
+    unassigned_count = (
+        db.query(Complaint)
+        .filter(Complaint.department_id.is_(None))
+        .count()
+    )
+    if unassigned_count > 0:
+        result.append(
+            DepartmentCountItem(
+                department_id=None,
+                department_name="Unassigned",
+                count=unassigned_count,
+            )
+        )
+    return result
+
+
+@app.get("/analytics/status", response_model=list[StatusCountItem])
+def get_analytics_status(
+    db: Session = Depends(get_db),
+    current_staff: User = Depends(get_current_staff),
+):
+    rows = (
+        db.query(Complaint.status, func.count(Complaint.id).label("count"))
+        .group_by(Complaint.status)
+        .all()
+    )
+    return [StatusCountItem(status=r[0], count=r[1]) for r in rows]
+
+
+@app.get("/analytics/priority", response_model=list[PriorityCountItem])
+def get_analytics_priority(
+    db: Session = Depends(get_db),
+    current_staff: User = Depends(get_current_staff),
+):
+    rows = (
+        db.query(Complaint.priority, func.count(Complaint.id).label("count"))
+        .group_by(Complaint.priority)
+        .all()
+    )
+    return [PriorityCountItem(priority=r[0], count=r[1]) for r in rows]
+
+
+@app.get("/analytics/trends", response_model=list[TrendCountItem])
+def get_analytics_trends(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: Session = Depends(get_db),
+    current_staff: User = Depends(get_current_staff),
+):
+    dt_start: datetime | None = None
+    dt_end: datetime | None = None
+
+    if start_date is not None and start_date.strip() != "":
+        dt_start = parse_date_param("start_date", start_date, is_end=False)
+
+    if end_date is not None and end_date.strip() != "":
+        dt_end = parse_date_param("end_date", end_date, is_end=True)
+
+    if dt_start and dt_end:
+        s_cmp = dt_start.replace(tzinfo=None) if dt_start.tzinfo else dt_start
+        e_cmp = dt_end.replace(tzinfo=None) if dt_end.tzinfo else dt_end
+        if s_cmp > e_cmp:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date range: 'start_date' cannot be after 'end_date'.",
+            )
+
+    query = db.query(
+        func.date(Complaint.created_at).label("dt"),
+        func.count(Complaint.id).label("count"),
+    )
+
+    if dt_start:
+        query = query.filter(Complaint.created_at >= dt_start)
+    if dt_end:
+        query = query.filter(Complaint.created_at <= dt_end)
+
+    rows = (
+        query.group_by(func.date(Complaint.created_at))
+        .order_by(func.date(Complaint.created_at).asc())
+        .all()
+    )
+
+    return [TrendCountItem(date=str(r[0]), count=r[1]) for r in rows]

@@ -157,4 +157,60 @@ class AuthorityDashboardResponse(BaseModel):
     critical_priority: int
 
 
+class DepartmentCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class UserRoleUpdate(BaseModel):
+    role: str
+
+
+class AdminDashboardResponse(BaseModel):
+    total_users: int
+    total_citizens: int
+    total_authorities: int
+    total_admins: int
+    total_complaints: int
+    pending_complaints: int
+    in_progress_complaints: int
+    resolved_complaints: int
+    unread_notifications: int
+
+
+class AnalyticsOverviewResponse(BaseModel):
+    total: int
+    pending: int
+    in_progress: int
+    resolved: int
+    resolution_rate: float
+
+
+class CategoryCountItem(BaseModel):
+    category: str
+    count: int
+
+
+class DepartmentCountItem(BaseModel):
+    department_id: Optional[int] = None
+    department_name: str
+    count: int
+
+
+class StatusCountItem(BaseModel):
+    status: str
+    count: int
+
+
+class PriorityCountItem(BaseModel):
+    priority: str
+    count: int
+
+
+class TrendCountItem(BaseModel):
+    date: str
+    count: int
+
+
+
 
