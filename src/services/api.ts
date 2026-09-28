@@ -57,6 +57,15 @@ export interface ApiCitizenDashboard {
   resolved: number;
 }
 
+export interface ApiAuthorityDashboard {
+  total: number;
+  pending: number;
+  in_progress: number;
+  resolved: number;
+  high_priority: number;
+  critical_priority: number;
+}
+
 export interface ApiDepartment {
   id: number;
   name: string;
@@ -215,6 +224,19 @@ export const api = {
         method: 'GET',
       });
     },
+    getAuthorityStats: async (): Promise<ApiAuthorityDashboard> => {
+      return request<ApiAuthorityDashboard>('/dashboard', {
+        method: 'GET',
+      });
+    },
+  },
+
+  users: {
+    getAll: async (): Promise<ApiUser[]> => {
+      return request<ApiUser[]>('/users', {
+        method: 'GET',
+      });
+    },
   },
 
   departments: {
@@ -259,6 +281,30 @@ export const api = {
     create: async (data: ApiComplaintCreate): Promise<ApiComplaint> => {
       return request<ApiComplaint>('/complaints', {
         method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    updateStatus: async (id: number, status: string): Promise<ApiComplaint> => {
+      return request<ApiComplaint>(`/complaints/${id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+    },
+
+    updatePriority: async (id: number, priority: string): Promise<ApiComplaint> => {
+      return request<ApiComplaint>(`/complaints/${id}/priority`, {
+        method: 'PATCH',
+        body: JSON.stringify({ priority }),
+      });
+    },
+
+    updateAssignment: async (
+      id: number,
+      data: { department_id?: number | null; assigned_authority_id?: number | null }
+    ): Promise<ApiComplaint> => {
+      return request<ApiComplaint>(`/complaints/${id}/assignment`, {
+        method: 'PATCH',
         body: JSON.stringify(data),
       });
     },

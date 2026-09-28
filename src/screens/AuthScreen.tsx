@@ -91,6 +91,12 @@ export const AuthScreen: React.FC = () => {
     setLoginError(null);
   };
 
+  const handleFillDemoAuthority = () => {
+    setLoginEmail('officer@civicpulse.gov.in');
+    setLoginPassword('authority123');
+    setLoginError(null);
+  };
+
   return (
     <div className="min-h-full flex flex-col justify-center px-4 py-8 bg-slate-50 dark:bg-slate-900 transition-colors">
       <div className="max-w-md w-full mx-auto">
@@ -197,14 +203,22 @@ export const AuthScreen: React.FC = () => {
               </div>
 
               {/* Quick Fill Demo Credentials */}
-              <div className="pt-1 flex items-center justify-between">
+              <div className="pt-1 flex flex-wrap items-center justify-between gap-2">
                 <button
                   type="button"
                   onClick={handleFillDemoCitizen}
                   className="inline-flex items-center gap-1 text-[11px] font-medium text-[#1565C0] dark:text-blue-400 hover:underline"
                 >
                   <Sparkles className="w-3 h-3" />
-                  Use Demo Citizen Account
+                  Demo Citizen
+                </button>
+                <button
+                  type="button"
+                  onClick={handleFillDemoAuthority}
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 hover:underline"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  Demo Authority
                 </button>
               </div>
 

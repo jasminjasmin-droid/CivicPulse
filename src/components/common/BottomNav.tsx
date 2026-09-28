@@ -1,47 +1,100 @@
 import React from 'react';
-import { Home, PlusCircle, Search, Bot, User, LayoutDashboard } from 'lucide-react';
+import {
+  Home,
+  PlusCircle,
+  Search,
+  Bot,
+  User,
+  LayoutDashboard,
+  BarChart3,
+  ShieldAlert,
+} from 'lucide-react';
 import { useApp, AppTab } from '../../context/AppContext';
 
 export const BottomNav: React.FC = () => {
-  const { activeTab, setActiveTab, currentRole, t } = useApp();
+  const { activeTab, setActiveTab, apiUser, t } = useApp();
 
-  const isAuthority = currentRole !== 'citizen';
+  const role = apiUser?.role || 'citizen';
 
-  const navItems = [
-    {
-      id: 'home' as AppTab,
-      label: t('navHome'),
-      icon: Home,
-    },
-    {
-      id: 'report' as AppTab,
-      label: t('navReport'),
-      icon: PlusCircle,
-      isPrimary: true,
-    },
-    {
-      id: 'track' as AppTab,
-      label: t('navTrack'),
-      icon: Search,
-    },
-    {
-      id: 'ai' as AppTab,
-      label: t('navAi'),
-      icon: Bot,
-    },
-    isAuthority
-      ? {
-          id: (currentRole === 'super_admin' ? 'super_admin' : 'authority_dash') as AppTab,
-          label: t('navDashboard'),
-          icon: LayoutDashboard,
-          isSpecial: true,
-        }
-      : {
-          id: 'profile' as AppTab,
-          label: t('navProfile'),
-          icon: User,
-        },
-  ];
+  let navItems: {
+    id: AppTab;
+    label: string;
+    icon: any;
+    isPrimary?: boolean;
+  }[] = [];
+
+  if (role === 'authority') {
+    navItems = [
+      {
+        id: 'authority_dash' as AppTab,
+        label: 'Dashboard',
+        icon: LayoutDashboard,
+      },
+      {
+        id: 'analytics' as AppTab,
+        label: 'Analytics',
+        icon: BarChart3,
+      },
+      {
+        id: 'profile' as AppTab,
+        label: 'Profile',
+        icon: User,
+      },
+    ];
+  } else if (role === 'admin') {
+    navItems = [
+      {
+        id: 'super_admin' as AppTab,
+        label: 'Admin Hub',
+        icon: ShieldAlert,
+      },
+      {
+        id: 'authority_dash' as AppTab,
+        label: 'Grievances',
+        icon: LayoutDashboard,
+      },
+      {
+        id: 'analytics' as AppTab,
+        label: 'Analytics',
+        icon: BarChart3,
+      },
+      {
+        id: 'profile' as AppTab,
+        label: 'Profile',
+        icon: User,
+      },
+    ];
+  } else {
+    // Verified Citizen Navigation (Preserved 100%)
+    navItems = [
+      {
+        id: 'home' as AppTab,
+        label: t('navHome'),
+        icon: Home,
+      },
+      {
+        id: 'report' as AppTab,
+        label: t('navReport'),
+        icon: PlusCircle,
+        isPrimary: true,
+      },
+      {
+        id: 'track' as AppTab,
+        label: t('navTrack'),
+        icon: Search,
+      },
+      {
+        id: 'ai' as AppTab,
+        label: t('navAi'),
+        icon: Bot,
+      },
+      {
+        id: 'profile' as AppTab,
+        label: t('navProfile'),
+        icon: User,
+      },
+    ];
+  }
 
   return (
     <nav className="sticky bottom-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-[#CFD8DC]/70 dark:border-slate-800 px-3 py-2 transition-colors">
@@ -55,7 +108,7 @@ export const BottomNav: React.FC = () => {
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className="relative -top-4 flex flex-col items-center group focus:outline-none"
+                className="relative -top-4 flex flex-col items-center group focus:outline-none cursor-pointer"
               >
                 <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#1565C0] via-[#1976D2] to-[#26A69A] text-white flex items-center justify-center shadow-soft-lg group-hover:scale-105 group-active:scale-95 transition-all">
                   <Icon className="w-7 h-7 stroke-[2.2]" />
@@ -71,9 +124,9 @@ export const BottomNav: React.FC = () => {
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className="flex flex-col items-center py-1 px-3 rounded-2xl transition focus:outline-none relative group"
+              className="flex flex-col items-center py-1 px-3 rounded-2xl transition focus:outline-none relative group cursor-pointer"
             >
-              {/* MD3 Active Indicator Pill */}
+              {/* Active Indicator Pill */}
               <div
                 className={`flex items-center justify-center w-12 h-7 rounded-full transition-all duration-200 ${
                   isActive
