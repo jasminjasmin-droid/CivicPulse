@@ -13,6 +13,14 @@ class User(Base):
     role = Column(String(50), default="citizen")
 
 
+class Department(Base):
+    __tablename__ = "departments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    description = Column(String(255), nullable=True)
+
+
 class Complaint(Base):
     __tablename__ = "complaints"
 
@@ -22,7 +30,26 @@ class Complaint(Base):
     category = Column(String(100), nullable=False)
     status = Column(String(50), default="Pending", nullable=False)
     citizen_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id"), nullable=True, index=True)
+    assigned_authority_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    citizen = relationship("User", backref="complaints")
+    citizen = relationship("User", foreign_keys=[citizen_id], backref="complaints")
+    department = relationship("Department", foreign_keys=[department_id])
+    assigned_authority = relationship("User", foreign_keys=[assigned_authority_id])
+
+
+class ComplaintHistory(Base):
+    __tablename__ = "complaint_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    complaint_id = Column(Integer, ForeignKey("complaints.id"), nullable=False, index=True)
+    action = Column(String(100), nullable=False)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    performed_by = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    complaint = relationship("Complaint", backref="history")
+    performer = relationship("User")

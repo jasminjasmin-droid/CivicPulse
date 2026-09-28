@@ -1,18 +1,22 @@
 from datetime import datetime, timezone
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine, Base
-from app.models import User, Complaint
+from app.models import User, Complaint, Department, ComplaintHistory
 from app.schemas import (
     UserCreate,
     UserResponse,
     UserLogin,
     LoginResponse,
+    DepartmentResponse,
     ComplaintCreate,
     ComplaintResponse,
     ComplaintStatusUpdate,
+    ComplaintAssignmentUpdate,
+    ComplaintHistoryResponse,
 )
 from app.security import (
     hash_password,
@@ -23,6 +27,25 @@ from app.security import (
 
 # Ensure tables are created without modifying existing database data
 Base.metadata.create_all(bind=engine)
+with engine.connect() as conn:
+    conn.execute(text("ALTER TABLE complaints ADD COLUMN IF NOT EXISTS department_id INTEGER REFERENCES departments(id);"))
+    conn.execute(text("ALTER TABLE complaints ADD COLUMN IF NOT EXISTS assigned_authority_id INTEGER REFERENCES users(id);"))
+    conn.commit()
+
+# Seed default departments if table is empty
+_db = SessionLocal()
+if _db.query(Department).count() == 0:
+    _db.add_all([
+        Department(name="Sanitation", description="Waste management, street sweeping, and sanitation."),
+        Department(name="Roads", description="Road maintenance, pothole repairs, and pavement works."),
+        Department(name="Water Supply", description="Drinking water pipelines, leakage, and supply schedule."),
+        Department(name="Electricity", description="Power supply, transformers, and electrical safety."),
+        Department(name="Public Health", description="Mosquito control, vector management, and public health."),
+        Department(name="Street Lighting", description="Streetlight pole repairs, LED installations, and maintenance."),
+        Department(name="Other", description="General civic issues and miscellaneous grievances.")
+    ])
+    _db.commit()
+_db.close()
 
 app = FastAPI(
     title="CivicPulse API",
@@ -113,7 +136,6 @@ def get_current_authority(
     return current_user
 
 
-
 @app.get("/")
 def root():
     return {"message": "CivicPulse API is running"}
@@ -189,6 +211,11 @@ def get_me(current_user: User = Depends(get_current_user)):
     }
 
 
+@app.get("/departments", response_model=list[DepartmentResponse])
+def get_departments(db: Session = Depends(get_db)):
+    return db.query(Department).order_by(Department.id.asc()).all()
+
+
 @app.post("/complaints", response_model=ComplaintResponse, status_code=status.HTTP_201_CREATED)
 def create_complaint(
     complaint: ComplaintCreate,
@@ -207,6 +234,17 @@ def create_complaint(
     db.commit()
     db.refresh(new_complaint)
 
+    # Record history: complaint created
+    history_entry = ComplaintHistory(
+        complaint_id=new_complaint.id,
+        action="Created",
+        old_value=None,
+        new_value="Complaint created",
+        performed_by=current_user.id
+    )
+    db.add(history_entry)
+    db.commit()
+
     return new_complaint
 
 
@@ -215,6 +253,8 @@ def get_complaints(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    if current_user.role == "authority":
+        return db.query(Complaint).all()
     return db.query(Complaint).filter(Complaint.citizen_id == current_user.id).all()
 
 
@@ -226,7 +266,13 @@ def get_complaint(
 ):
     complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
 
-    if not complaint or complaint.citizen_id != current_user.id:
+    if not complaint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    if current_user.role != "authority" and complaint.citizen_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Complaint not found"
@@ -258,8 +304,20 @@ def update_complaint_status(
             detail="Complaint not found"
         )
 
-    complaint.status = status_update.status
+    old_status = complaint.status
+    new_status = status_update.status
+
+    complaint.status = new_status
     complaint.updated_at = datetime.now(timezone.utc)
+
+    if old_status != new_status:
+        db.add(ComplaintHistory(
+            complaint_id=complaint.id,
+            action="Status Changed",
+            old_value=old_status,
+            new_value=new_status,
+            performed_by=current_authority.id
+        ))
 
     db.commit()
     db.refresh(complaint)
@@ -267,4 +325,111 @@ def update_complaint_status(
     return complaint
 
 
+@app.patch("/complaints/{complaint_id}/assignment", response_model=ComplaintResponse)
+def assign_complaint(
+    complaint_id: int,
+    assignment: ComplaintAssignmentUpdate,
+    db: Session = Depends(get_db),
+    current_authority: User = Depends(get_current_authority)
+):
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
 
+    if assignment.department_id is None and assignment.assigned_authority_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one of department_id or assigned_authority_id must be provided"
+        )
+
+    # Validate department if provided
+    new_dept = None
+    if assignment.department_id is not None:
+        new_dept = db.query(Department).filter(Department.id == assignment.department_id).first()
+        if not new_dept:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Department with id {assignment.department_id} does not exist"
+            )
+
+    # Validate assigned authority if provided
+    new_auth = None
+    if assignment.assigned_authority_id is not None:
+        new_auth = db.query(User).filter(User.id == assignment.assigned_authority_id).first()
+        if not new_auth:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Authority user with id {assignment.assigned_authority_id} does not exist"
+            )
+        if new_auth.role != "authority":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Assigned user with id {assignment.assigned_authority_id} must have authority role"
+            )
+
+    # Handle department assignment history
+    if assignment.department_id is not None and assignment.department_id != complaint.department_id:
+        old_dept_obj = db.query(Department).filter(Department.id == complaint.department_id).first() if complaint.department_id else None
+        old_dept_name = f"{old_dept_obj.name} Department" if old_dept_obj else None
+        new_dept_name = f"{new_dept.name} Department"
+        action_name = "Complaint Assigned" if old_dept_obj is None else "Department Changed"
+
+        db.add(ComplaintHistory(
+            complaint_id=complaint.id,
+            action=action_name,
+            old_value=old_dept_name,
+            new_value=new_dept_name,
+            performed_by=current_authority.id
+        ))
+        complaint.department_id = assignment.department_id
+
+    # Handle authority assignment history
+    if assignment.assigned_authority_id is not None and assignment.assigned_authority_id != complaint.assigned_authority_id:
+        old_auth_obj = db.query(User).filter(User.id == complaint.assigned_authority_id).first() if complaint.assigned_authority_id else None
+        old_auth_name = old_auth_obj.name if old_auth_obj else None
+        new_auth_name = new_auth.name
+        action_name = "Authority Assigned" if old_auth_obj is None else "Authority Changed"
+
+        db.add(ComplaintHistory(
+            complaint_id=complaint.id,
+            action=action_name,
+            old_value=old_auth_name,
+            new_value=new_auth_name,
+            performed_by=current_authority.id
+        ))
+        complaint.assigned_authority_id = assignment.assigned_authority_id
+
+    complaint.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(complaint)
+
+    return complaint
+
+
+@app.get("/complaints/{complaint_id}/history", response_model=list[ComplaintHistoryResponse])
+def get_complaint_history(
+    complaint_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    # Only owner citizen or authority can view complaint history
+    if current_user.role != "authority" and complaint.citizen_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    return db.query(ComplaintHistory)\
+        .filter(ComplaintHistory.complaint_id == complaint_id)\
+        .order_by(ComplaintHistory.created_at.asc(), ComplaintHistory.id.asc())\
+        .all()

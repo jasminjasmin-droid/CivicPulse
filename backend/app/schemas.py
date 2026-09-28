@@ -40,6 +40,15 @@ class LoginResponse(BaseModel):
     role: str
 
 
+class DepartmentResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ComplaintCreate(BaseModel):
     title: str
     description: str
@@ -54,6 +63,8 @@ class ComplaintResponse(BaseModel):
     category: str
     status: str
     citizen_id: int
+    department_id: Optional[int] = None
+    assigned_authority_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -64,3 +75,20 @@ class ComplaintResponse(BaseModel):
 class ComplaintStatusUpdate(BaseModel):
     status: str
 
+
+class ComplaintAssignmentUpdate(BaseModel):
+    department_id: Optional[int] = None
+    assigned_authority_id: Optional[int] = None
+
+
+class ComplaintHistoryResponse(BaseModel):
+    id: int
+    complaint_id: int
+    action: str
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    performed_by: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
