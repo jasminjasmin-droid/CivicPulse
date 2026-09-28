@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -11,6 +12,7 @@ from app.schemas import (
     LoginResponse,
     ComplaintCreate,
     ComplaintResponse,
+    ComplaintStatusUpdate,
 )
 from app.security import (
     hash_password,
@@ -98,6 +100,18 @@ def get_current_user(
         )
 
     return user
+
+
+def get_current_authority(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    if current_user.role != "authority":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: authority role required"
+        )
+    return current_user
+
 
 
 @app.get("/")
@@ -219,5 +233,38 @@ def get_complaint(
         )
 
     return complaint
+
+
+ALLOWED_COMPLAINT_STATUSES = {"Pending", "In Progress", "Resolved"}
+
+
+@app.patch("/complaints/{complaint_id}/status", response_model=ComplaintResponse)
+def update_complaint_status(
+    complaint_id: int,
+    status_update: ComplaintStatusUpdate,
+    db: Session = Depends(get_db),
+    current_authority: User = Depends(get_current_authority)
+):
+    if status_update.status not in ALLOWED_COMPLAINT_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid status '{status_update.status}'. Allowed statuses are: Pending, In Progress, Resolved."
+        )
+
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    complaint.status = status_update.status
+    complaint.updated_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(complaint)
+
+    return complaint
+
 
 
