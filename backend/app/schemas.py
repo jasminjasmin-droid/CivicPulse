@@ -53,7 +53,11 @@ class ComplaintCreate(BaseModel):
     title: str
     description: str
     category: str
+    priority: Optional[str] = "Medium"
     status: Optional[str] = "Pending"
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    address: Optional[str] = None
 
 
 class ComplaintResponse(BaseModel):
@@ -61,10 +65,14 @@ class ComplaintResponse(BaseModel):
     title: str
     description: str
     category: str
+    priority: str = "Medium"
     status: str
     citizen_id: int
     department_id: Optional[int] = None
     assigned_authority_id: Optional[int] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    address: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -74,6 +82,10 @@ class ComplaintResponse(BaseModel):
 
 class ComplaintStatusUpdate(BaseModel):
     status: str
+
+
+class ComplaintPriorityUpdate(BaseModel):
+    priority: str
 
 
 class ComplaintAssignmentUpdate(BaseModel):
@@ -88,6 +100,19 @@ class ComplaintHistoryResponse(BaseModel):
     old_value: Optional[str] = None
     new_value: Optional[str] = None
     performed_by: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ComplaintEvidenceResponse(BaseModel):
+    id: int
+    complaint_id: int
+    uploaded_by: int
+    file_name: str
+    file_type: str
+    file_size: int
     created_at: datetime
 
     class Config:

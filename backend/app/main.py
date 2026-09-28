@@ -1,11 +1,14 @@
+import os
+import uuid
 from datetime import datetime, timezone
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi import FastAPI, Depends, HTTPException, status, Request, UploadFile, File
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine, Base
-from app.models import User, Complaint, Department, ComplaintHistory
+from app.models import User, Complaint, Department, ComplaintHistory, ComplaintEvidence
 from app.schemas import (
     UserCreate,
     UserResponse,
@@ -15,8 +18,10 @@ from app.schemas import (
     ComplaintCreate,
     ComplaintResponse,
     ComplaintStatusUpdate,
+    ComplaintPriorityUpdate,
     ComplaintAssignmentUpdate,
     ComplaintHistoryResponse,
+    ComplaintEvidenceResponse,
 )
 from app.security import (
     hash_password,
@@ -25,11 +30,20 @@ from app.security import (
     decode_access_token,
 )
 
+# Upload directory setup
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 # Ensure tables are created without modifying existing database data
 Base.metadata.create_all(bind=engine)
 with engine.connect() as conn:
     conn.execute(text("ALTER TABLE complaints ADD COLUMN IF NOT EXISTS department_id INTEGER REFERENCES departments(id);"))
     conn.execute(text("ALTER TABLE complaints ADD COLUMN IF NOT EXISTS assigned_authority_id INTEGER REFERENCES users(id);"))
+    conn.execute(text("ALTER TABLE complaints ADD COLUMN IF NOT EXISTS priority VARCHAR(20) DEFAULT 'Medium';"))
+    conn.execute(text("UPDATE complaints SET priority = 'Medium' WHERE priority IS NULL;"))
+    conn.execute(text("ALTER TABLE complaints ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;"))
+    conn.execute(text("ALTER TABLE complaints ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;"))
+    conn.execute(text("ALTER TABLE complaints ADD COLUMN IF NOT EXISTS address TEXT;"))
     conn.commit()
 
 # Seed default departments if table is empty
@@ -216,18 +230,64 @@ def get_departments(db: Session = Depends(get_db)):
     return db.query(Department).order_by(Department.id.asc()).all()
 
 
+SUPPORTED_CATEGORIES = {
+    "Sanitation",
+    "Roads",
+    "Water Supply",
+    "Electricity",
+    "Public Health",
+    "Street Lighting",
+    "Public Safety",
+    "Drainage",
+    "Other"
+}
+
+ALLOWED_PRIORITIES = {"Low", "Medium", "High", "Critical"}
+
+
 @app.post("/complaints", response_model=ComplaintResponse, status_code=status.HTTP_201_CREATED)
 def create_complaint(
     complaint: ComplaintCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # Validate category
+    if complaint.category not in SUPPORTED_CATEGORIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid category '{complaint.category}'. Supported categories are: Sanitation, Roads, Water Supply, Electricity, Public Health, Street Lighting, Public Safety, Drainage, Other."
+        )
+
+    # Validate priority if supplied
+    if complaint.priority and complaint.priority not in ALLOWED_PRIORITIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid priority '{complaint.priority}'. Allowed priorities are: Low, Medium, High, Critical."
+        )
+
+    # Validate coordinates
+    if complaint.latitude is not None and not (-90.0 <= complaint.latitude <= 90.0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Latitude must be between -90 and 90 degrees."
+        )
+
+    if complaint.longitude is not None and not (-180.0 <= complaint.longitude <= 180.0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Longitude must be between -180 and 180 degrees."
+        )
+
     new_complaint = Complaint(
         title=complaint.title,
         description=complaint.description,
         category=complaint.category,
+        priority="Medium",  # Default priority is Medium; authorities can update later
         status=complaint.status or "Pending",
-        citizen_id=current_user.id
+        citizen_id=current_user.id,
+        latitude=complaint.latitude,
+        longitude=complaint.longitude,
+        address=complaint.address
     )
 
     db.add(new_complaint)
@@ -316,6 +376,47 @@ def update_complaint_status(
             action="Status Changed",
             old_value=old_status,
             new_value=new_status,
+            performed_by=current_authority.id
+        ))
+
+    db.commit()
+    db.refresh(complaint)
+
+    return complaint
+
+
+@app.patch("/complaints/{complaint_id}/priority", response_model=ComplaintResponse)
+def update_complaint_priority(
+    complaint_id: int,
+    priority_update: ComplaintPriorityUpdate,
+    db: Session = Depends(get_db),
+    current_authority: User = Depends(get_current_authority)
+):
+    if priority_update.priority not in ALLOWED_PRIORITIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid priority '{priority_update.priority}'. Allowed priorities are: Low, Medium, High, Critical."
+        )
+
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    old_priority = complaint.priority or "Medium"
+    new_priority = priority_update.priority
+
+    complaint.priority = new_priority
+    complaint.updated_at = datetime.now(timezone.utc)
+
+    if old_priority != new_priority:
+        db.add(ComplaintHistory(
+            complaint_id=complaint.id,
+            action="Priority Changed",
+            old_value=old_priority,
+            new_value=new_priority,
             performed_by=current_authority.id
         ))
 
@@ -433,3 +534,144 @@ def get_complaint_history(
         .filter(ComplaintHistory.complaint_id == complaint_id)\
         .order_by(ComplaintHistory.created_at.asc(), ComplaintHistory.id.asc())\
         .all()
+
+
+ALLOWED_EVIDENCE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
+ALLOWED_EVIDENCE_MIME_TYPES = {"image/jpeg", "image/png", "application/pdf"}
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB limit
+
+
+@app.post("/complaints/{complaint_id}/evidence", response_model=ComplaintEvidenceResponse, status_code=status.HTTP_201_CREATED)
+async def upload_complaint_evidence(
+    complaint_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    # Only owner citizen or authority can upload evidence
+    if current_user.role != "authority" and complaint.citizen_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    # Validate file extension and MIME type
+    original_filename = file.filename or "evidence"
+    file_ext = os.path.splitext(original_filename)[1].lower()
+
+    if file_ext not in ALLOWED_EVIDENCE_EXTENSIONS or file.content_type not in ALLOWED_EVIDENCE_MIME_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported file type. Allowed types are: image/jpeg (.jpg, .jpeg), image/png (.png), application/pdf (.pdf)."
+        )
+
+    # Read and validate size
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File size exceeds the 10 MB limit ({len(content)} bytes uploaded)."
+        )
+
+    # Generate safe server-side storage filename (prevent path traversal)
+    safe_filename = f"{uuid.uuid4().hex}{file_ext}"
+    storage_path = os.path.join(UPLOAD_DIR, safe_filename)
+
+    with open(storage_path, "wb") as f:
+        f.write(content)
+
+    clean_display_name = os.path.basename(original_filename)
+
+    evidence = ComplaintEvidence(
+        complaint_id=complaint.id,
+        uploaded_by=current_user.id,
+        file_name=clean_display_name,
+        file_type=file.content_type,
+        file_size=len(content),
+        file_path=storage_path
+    )
+    db.add(evidence)
+
+    # Record history
+    db.add(ComplaintHistory(
+        complaint_id=complaint.id,
+        action="Evidence Uploaded",
+        old_value=None,
+        new_value=clean_display_name,
+        performed_by=current_user.id
+    ))
+
+    db.commit()
+    db.refresh(evidence)
+
+    return evidence
+
+
+@app.get("/complaints/{complaint_id}/evidence", response_model=list[ComplaintEvidenceResponse])
+def get_complaint_evidence_list(
+    complaint_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    # Access control: owner citizen or authority
+    if current_user.role != "authority" and complaint.citizen_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    return db.query(ComplaintEvidence)\
+        .filter(ComplaintEvidence.complaint_id == complaint_id)\
+        .order_by(ComplaintEvidence.created_at.asc())\
+        .all()
+
+
+@app.get("/complaints/{complaint_id}/evidence/{evidence_id}")
+def download_complaint_evidence(
+    complaint_id: int,
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    if not complaint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    if current_user.role != "authority" and complaint.citizen_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Complaint not found"
+        )
+
+    evidence = db.query(ComplaintEvidence)\
+        .filter(ComplaintEvidence.id == evidence_id, ComplaintEvidence.complaint_id == complaint_id)\
+        .first()
+
+    if not evidence or not os.path.exists(evidence.file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evidence file not found"
+        )
+
+    return FileResponse(
+        path=evidence.file_path,
+        media_type=evidence.file_type,
+        filename=evidence.file_name
+    )
